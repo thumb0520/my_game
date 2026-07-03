@@ -26,6 +26,7 @@ func NewGame(provider llm.LLMProvider) *Game {
 	return &Game{
 		state: &GameState{
 			Phase: PhaseTitle,
+			Meta:  game.NewMetaProgress(),
 		},
 		renderer: display.NewRenderer(),
 		llm:      provider,
@@ -59,7 +60,13 @@ func (g *Game) GetState() *GameState {
 // ProcessInput 处理用户输入
 func (g *Game) ProcessInput(input string) {
 	input = strings.TrimSpace(input)
+
+	// 等待继续状态：空输入 = 按回车继续
 	if input == "" {
+		if g.state.Waiting == "continue" {
+			g.state.Waiting = ""
+			g.continueCombatTurn()
+		}
 		return
 	}
 
@@ -70,6 +77,8 @@ func (g *Game) ProcessInput(input string) {
 	switch g.state.Phase {
 	case PhaseTitle:
 		g.processTitleInput(cmd, args)
+	case PhaseTown:
+		g.processTownInput(cmd, args)
 	case PhaseCharacter:
 		g.processCharacterInput(cmd, args)
 	case PhaseExplore:
@@ -128,7 +137,7 @@ func (g *Game) processTitleInput(cmd string, args []string) {
 		}
 		g.state = state
 		g.addOutput(g.renderer.LogInfo("游戏加载成功！"))
-		g.addOutput(g.renderer.RenderRoom(g.state.Dungeon.GetCurrentRoom(), g.state.Dungeon))
+		g.addOutput(g.renderer.LogInfo(fmt.Sprintf("当前位置: [%s]", game.GetNodeLabel(g.state.FloorMap.GetCurrentNode().Type))))
 
 	case "help":
 		g.addOutput(g.renderer.RenderHelp())
@@ -145,17 +154,24 @@ func (g *Game) processTitleInput(cmd string, args []string) {
 // startGame 开始游戏（创建角色并进入探索）
 func (g *Game) startGame(name string, class game.Class) {
 	player := game.NewCharacter(name, class)
+
+	// 应用局外养成加成
+	if g.state.Meta != nil {
+		g.state.Meta.ApplyUpgrades(player)
+	}
+
 	g.state.Player = player
 	g.state.Depth = 1
 	g.state.Phase = PhaseExplore
-	g.state.Dungeon = game.GenerateDungeon(g.state.Depth)
+	g.state.FloorMap = game.GenerateFloorMap(g.state.Depth)
 
 	g.addOutput(g.renderer.LogInfo(fmt.Sprintf("你选择了 %s！", string(class))))
 	g.addOutput(g.renderer.LogInfo(fmt.Sprintf("%s 的冒险即将开始……", player.Name)))
 	g.addOutput("")
 	g.addOutput(g.renderer.RenderCharacterSheet(player))
 	g.addOutput("")
-	g.addOutput(g.renderer.RenderRoom(g.state.Dungeon.GetCurrentRoom(), g.state.Dungeon))
+	g.addOutput(g.renderer.RenderFloorMap(g.state.FloorMap))
+	g.addOutput(g.renderer.RenderNodeSelection(g.state.FloorMap.GetReachableNodes()))
 }
 
 // === 角色创建 ===
@@ -181,15 +197,21 @@ func (g *Game) processExploreInput(cmd string, args []string) {
 	switch cmd {
 	case "go":
 		if len(args) < 1 {
-			g.addOutput(g.renderer.LogError("用法: go <房间编号>"))
+			// 显示可前往的节点
+			reachable := g.state.FloorMap.GetReachableNodes()
+			if len(reachable) == 0 {
+				g.addOutput(g.renderer.LogError("没有可前往的节点"))
+			} else {
+				g.addOutput(g.renderer.RenderNodeSelection(reachable))
+			}
 			return
 		}
 		idx, err := strconv.Atoi(args[0])
 		if err != nil {
-			g.addOutput(g.renderer.LogError("无效的房间编号"))
+			g.addOutput(g.renderer.LogError("无效的编号"))
 			return
 		}
-		g.moveToRoom(idx)
+		g.moveToNode(idx)
 
 	case "look", "interact":
 		g.interactWithRoom()
@@ -204,7 +226,7 @@ func (g *Game) processExploreInput(cmd string, args []string) {
 		g.addOutput(g.renderer.RenderSkills(g.state.Player.Skills))
 
 	case "map":
-		g.addOutput(g.renderer.RenderDungeonMap(g.state.Dungeon))
+		g.addOutput(g.renderer.RenderFloorMap(g.state.FloorMap))
 
 	case "equip":
 		if len(args) < 1 {
@@ -229,7 +251,7 @@ func (g *Game) processExploreInput(cmd string, args []string) {
 		}
 		g.state = state
 		g.addOutput(g.renderer.LogInfo("游戏加载成功！"))
-		g.addOutput(g.renderer.RenderRoom(g.state.Dungeon.GetCurrentRoom(), g.state.Dungeon))
+		g.addOutput(g.renderer.LogInfo(fmt.Sprintf("当前位置: [%s]", game.GetNodeLabel(g.state.FloorMap.GetCurrentNode().Type))))
 
 	case "stealth":
 		g.renderer.ToggleStealth()
@@ -249,26 +271,40 @@ func (g *Game) processExploreInput(cmd string, args []string) {
 		g.addOutput(g.renderer.LogInfo("再见，冒险者！"))
 
 	default:
+		// 检查是否是数字（快速选择节点）
+		if idx, err := strconv.Atoi(cmd); err == nil && len(args) == 0 {
+			g.moveToNode(idx)
+			return
+		}
 		g.addOutput(g.renderer.LogError("未知命令。输入 'help' 查看帮助。"))
 	}
 }
 
-// moveToRoom 移动到指定房间
-func (g *Game) moveToRoom(idx int) {
-	if !g.state.Dungeon.MoveTo(idx) {
-		g.addOutput(g.renderer.LogError("无法前往该房间！请检查连接路径。"))
+// moveToNode 移动到指定节点
+func (g *Game) moveToNode(selectionIdx int) {
+	reachable := g.state.FloorMap.GetReachableNodes()
+	if selectionIdx < 1 || selectionIdx > len(reachable) {
+		g.addOutput(g.renderer.LogError("无效的选择"))
 		return
 	}
 
-	room := g.state.Dungeon.GetCurrentRoom()
-	g.addOutput(g.renderer.RenderRoom(room, g.state.Dungeon))
+	target := reachable[selectionIdx-1]
+	if !g.state.FloorMap.MoveTo(target.Row, target.Col) {
+		g.addOutput(g.renderer.LogError("无法前往该节点！"))
+		return
+	}
 
-	// 根据房间类型触发事件
-	switch room.Type {
+	node := g.state.FloorMap.GetCurrentNode()
+	g.addOutput(g.renderer.LogInfo(fmt.Sprintf("前往: 行%d 列%d [%s]", node.Row, node.Col, game.GetNodeLabel(node.Type))))
+
+	// 根据节点类型触发事件
+	switch node.Type {
 	case game.RoomCombat:
-		g.startCombat(false)
+		g.startCombat(false, false)
+	case game.RoomElite:
+		g.startCombat(false, true)
 	case game.RoomBoss:
-		g.startCombat(true)
+		g.startCombat(true, false)
 	case game.RoomShop:
 		g.startShop()
 	case game.RoomEvent:
@@ -278,23 +314,25 @@ func (g *Game) moveToRoom(idx int) {
 	case game.RoomRest:
 		g.restAtCamp()
 	case game.RoomEntrance:
-		room.Cleared = true
+		node.Cleared = true
 	}
 }
 
-// interactWithRoom 与当前房间交互
+// interactWithRoom 与当前节点交互
 func (g *Game) interactWithRoom() {
-	room := g.state.Dungeon.GetCurrentRoom()
-	if room.Cleared {
+	node := g.state.FloorMap.GetCurrentNode()
+	if node.Cleared {
 		g.addOutput(g.renderer.LogInfo("这个房间已经被清理过了。"))
 		return
 	}
 
-	switch room.Type {
+	switch node.Type {
 	case game.RoomCombat:
-		g.startCombat(false)
+		g.startCombat(false, false)
+	case game.RoomElite:
+		g.startCombat(false, true)
 	case game.RoomBoss:
-		g.startCombat(true)
+		g.startCombat(true, false)
 	case game.RoomShop:
 		g.startShop()
 	case game.RoomEvent:
@@ -309,7 +347,7 @@ func (g *Game) interactWithRoom() {
 }
 
 // === 战斗系统 ===
-func (g *Game) startCombat(isBoss bool) {
+func (g *Game) startCombat(isBoss, isElite bool) {
 	// 生成怪物
 	monsterResp, err := g.llm.GenerateMonster(g.ctx, llm.MonsterRequest{
 		Depth:    g.state.Depth,
@@ -330,6 +368,16 @@ func (g *Game) startCombat(isBoss bool) {
 		g.state.Depth,
 		isBoss,
 	)
+
+	// 精英怪加成
+	if isElite {
+		monster.MaxHP = monster.MaxHP * 2
+		monster.HP = monster.MaxHP
+		monster.ATK = int(float64(monster.ATK) * 1.5)
+		monster.ExpReward = monster.ExpReward * 2
+		monster.GoldReward = monster.GoldReward * 2
+		monster.IsBoss = false // 标记为非 Boss，但保留精英属性
+	}
 
 	g.state.CombatState = game.NewCombatState(g.state.Player, monster)
 	g.state.Phase = PhaseCombat
@@ -392,7 +440,7 @@ func (g *Game) processCombatInput(cmd string, args []string) {
 		result = cs.ExecutePlayerFlee()
 		if cs.Fled {
 			g.state.Phase = PhaseExplore
-			g.state.Dungeon.GetCurrentRoom().Cleared = true
+			g.state.FloorMap.GetCurrentNode().Cleared = true
 			for _, msg := range result.Messages {
 				g.addOutput(g.renderer.LogInfo(msg))
 			}
@@ -435,22 +483,33 @@ func (g *Game) processCombatInput(cmd string, args []string) {
 		return
 	}
 
+	// 暂停，等待玩家按回车继续怪物回合
+	g.addOutput("")
+	g.addOutput(display.StatLabel.Render("  按回车继续..."))
+	g.state.Waiting = "continue"
+}
+
+// continueCombatTurn 继续怪物回合（玩家按回车后）
+func (g *Game) continueCombatTurn() {
+	cs := g.state.CombatState
+	if cs == nil || !cs.Monster.IsAlive() {
+		return
+	}
+
 	// 怪物回合 - LLM 生成怪物行动描述
 	monsterAction := ""
-	if cs.Monster.IsAlive() {
-		actionDesc, err := g.llm.GenerateCombatAction(g.ctx, llm.CombatActionRequest{
-			MonsterName:  cs.Monster.Name,
-			Traits:       cs.Monster.Traits,
-			Strategy:     cs.Monster.Strategy,
-			MonsterHP:    cs.Monster.HP,
-			MonsterMaxHP: cs.Monster.MaxHP,
-			PlayerHP:     g.state.Player.HP,
-			PlayerMaxHP:  g.state.Player.MaxHP,
-			Round:        cs.Round,
-		})
-		if err == nil {
-			monsterAction = actionDesc
-		}
+	actionDesc, err := g.llm.GenerateCombatAction(g.ctx, llm.CombatActionRequest{
+		MonsterName:  cs.Monster.Name,
+		Traits:       cs.Monster.Traits,
+		Strategy:     cs.Monster.Strategy,
+		MonsterHP:    cs.Monster.HP,
+		MonsterMaxHP: cs.Monster.MaxHP,
+		PlayerHP:     g.state.Player.HP,
+		PlayerMaxHP:  g.state.Player.MaxHP,
+		Round:        cs.Round,
+	})
+	if err == nil {
+		monsterAction = actionDesc
 	}
 
 	monsterResult := cs.ExecuteMonsterTurn(monsterAction)
@@ -470,7 +529,7 @@ func (g *Game) processCombatInput(cmd string, args []string) {
 		g.addOutput(g.renderer.LogInfo(msg))
 	}
 
-	// 再次检查战斗状态
+	// 检查战斗状态
 	if !g.state.Player.IsAlive() {
 		g.gameOver(false)
 		return
@@ -480,7 +539,7 @@ func (g *Game) processCombatInput(cmd string, args []string) {
 		return
 	}
 
-	// 显示当前战斗状态
+	// 显示当前战斗状态和操作选项
 	g.addOutput("")
 	g.addOutput(g.renderer.RenderCombatView(cs))
 	g.addOutput("")
@@ -494,7 +553,7 @@ func (g *Game) processCombatInput(cmd string, args []string) {
 
 func (g *Game) combatVictory() {
 	cs := g.state.CombatState
-	room := g.state.Dungeon.GetCurrentRoom()
+	room := g.state.FloorMap.GetCurrentNode()
 	room.Cleared = true
 
 	// 获得经验和金币
@@ -530,13 +589,15 @@ func (g *Game) combatVictory() {
 		g.addOutput(g.renderer.LogInfo(fmt.Sprintf("  地牢第 %d 层通关！", g.state.Depth)))
 		g.addOutput(g.renderer.LogInfo("═══════════════════════════"))
 		g.state.Depth++
-		g.state.Dungeon = game.GenerateDungeon(g.state.Depth)
+		g.state.FloorMap = game.GenerateFloorMap(g.state.Depth)
 		g.addOutput(g.renderer.LogInfo(fmt.Sprintf("  进入第 %d 层……", g.state.Depth)))
-		g.addOutput(g.renderer.RenderRoom(g.state.Dungeon.GetCurrentRoom(), g.state.Dungeon))
 	}
 
 	g.state.CombatState = nil
 	g.state.Phase = PhaseExplore
+
+	// 显示地图和可选路径
+	g.showMapAndSelection()
 }
 
 // === 商店系统 ===
@@ -566,15 +627,15 @@ func (g *Game) startShop() {
 		g.addOutput(g.renderer.LogInfo(fmt.Sprintf("  店主说: \"%s\"", dialogue)))
 	}
 	g.addOutput("")
-	g.addOutput(g.renderer.RenderShop(items, g.state.Player.Gold))
+	g.addOutput(g.renderer.RenderShop(items, g.state.Player.Gold, g.state.Player))
 }
 
 func (g *Game) processShopInput(cmd string, args []string) {
 	if cmd == "0" || cmd == "back" || cmd == "leave" {
 		g.state.Phase = PhaseExplore
-		g.state.Dungeon.GetCurrentRoom().Cleared = true
+		g.state.FloorMap.GetCurrentNode().Cleared = true
 		g.addOutput(g.renderer.LogInfo("你离开了商店。"))
-		g.addOutput(g.renderer.RenderRoom(g.state.Dungeon.GetCurrentRoom(), g.state.Dungeon))
+		g.showMapAndSelection()
 		return
 	}
 
@@ -598,7 +659,7 @@ func (g *Game) processShopInput(cmd string, args []string) {
 
 	// 从商店移除
 	g.state.ShopItems = append(g.state.ShopItems[:idx-1], g.state.ShopItems[idx:]...)
-	g.addOutput(g.renderer.RenderShop(g.state.ShopItems, g.state.Player.Gold))
+	g.addOutput(g.renderer.RenderShop(g.state.ShopItems, g.state.Player.Gold, g.state.Player))
 }
 
 // === 事件系统 ===
@@ -610,7 +671,7 @@ func (g *Game) startEvent() {
 	})
 	if err != nil {
 		g.addOutput(g.renderer.LogError("事件生成失败"))
-		g.state.Dungeon.GetCurrentRoom().Cleared = true
+		g.state.FloorMap.GetCurrentNode().Cleared = true
 		g.state.Phase = PhaseExplore
 		return
 	}
@@ -672,7 +733,7 @@ func (g *Game) processEventInput(cmd string, args []string) {
 		Outcome:     choice.Outcome,
 	}))
 
-	g.state.Dungeon.GetCurrentRoom().Cleared = true
+	g.state.FloorMap.GetCurrentNode().Cleared = true
 	g.state.EventData = nil
 	g.state.Phase = PhaseExplore
 
@@ -681,18 +742,18 @@ func (g *Game) processEventInput(cmd string, args []string) {
 		return
 	}
 
-	g.addOutput(g.renderer.RenderRoom(g.state.Dungeon.GetCurrentRoom(), g.state.Dungeon))
+	g.showMapAndSelection()
 }
 
 // === 宝箱 ===
 func (g *Game) openTreasure() {
-	room := g.state.Dungeon.GetCurrentRoom()
+	node := g.state.FloorMap.GetCurrentNode()
 
 	// LLM 生成宝箱描述
 	desc, _ := g.llm.GenerateNarrative(g.ctx, llm.NarrativeRequest{
 		RoomType:  "treasure",
 		Depth:     g.state.Depth,
-		RoomIndex: room.Index,
+		RoomIndex: node.Row,
 	})
 	if desc != "" {
 		g.addOutput(g.renderer.LogInfo(desc))
@@ -718,17 +779,18 @@ func (g *Game) openTreasure() {
 	}
 
 	g.addOutput(g.renderer.RenderLoot(items, gold, 0))
-	room.Cleared = true
+	node.Cleared = true
+	g.showMapAndSelection()
 }
 
 // === 休息点 ===
 func (g *Game) restAtCamp() {
-	room := g.state.Dungeon.GetCurrentRoom()
+	node := g.state.FloorMap.GetCurrentNode()
 
 	desc, _ := g.llm.GenerateNarrative(g.ctx, llm.NarrativeRequest{
 		RoomType:  "rest",
 		Depth:     g.state.Depth,
-		RoomIndex: room.Index,
+		RoomIndex: node.Row,
 	})
 	if desc != "" {
 		g.addOutput(g.renderer.LogInfo(desc))
@@ -746,7 +808,8 @@ func (g *Game) restAtCamp() {
 		}
 	}
 
-	room.Cleared = true
+	node.Cleared = true
+	g.showMapAndSelection()
 }
 
 // === 装备系统 ===
@@ -782,26 +845,146 @@ func (g *Game) equipItem(args string) {
 	g.addOutput(g.renderer.LogInfo(fmt.Sprintf("装备了 %s！", item.Name)))
 }
 
+// showMapAndSelection 显示地图和可选节点
+func (g *Game) showMapAndSelection() {
+	g.addOutput(g.renderer.RenderFloorMap(g.state.FloorMap))
+	reachable := g.state.FloorMap.GetReachableNodes()
+	if len(reachable) > 0 {
+		g.addOutput(g.renderer.RenderNodeSelection(reachable))
+	} else {
+		g.addOutput(g.renderer.LogInfo("没有可前往的节点。"))
+	}
+}
+
 // === 游戏结束 ===
 func (g *Game) gameOver(won bool) {
+	// 记录本次通关
+	g.state.Meta.RecordRun(g.state.Player.Gold, g.state.Depth)
+
 	if won {
 		g.state.Phase = PhaseVictory
 	} else {
 		g.state.Phase = PhaseGameOver
 	}
 	g.addOutput(g.renderer.RenderGameOver(won, g.state.Player))
+	g.addOutput("")
+	g.addOutput(g.renderer.LogInfo(game.FormatMetaStats(g.state.Meta)))
+	g.addOutput(g.renderer.LogInfo("输入 'town' 进入城镇，'restart' 重新开始，'quit' 退出。"))
 }
 
 func (g *Game) processEndInput(cmd string, args []string) {
 	switch cmd {
+	case "town":
+		g.enterTown()
 	case "restart":
-		g.state = &GameState{Phase: PhaseTitle}
+		// 保留养成数据
+		meta := g.state.Meta
+		g.state = &GameState{Phase: PhaseTitle, Meta: meta}
 		g.addOutput(g.renderer.RenderWelcome())
 	case "quit", "exit":
 		g.addOutput(g.renderer.LogInfo("再见！"))
 	default:
-		g.addOutput(g.renderer.LogInfo("输入 'restart' 重新开始，或 'quit' 退出。"))
+		g.addOutput(g.renderer.LogInfo("输入 'town' 进入城镇，'restart' 重新开始，'quit' 退出。"))
 	}
+}
+
+// === 城镇系统 ===
+func (g *Game) enterTown() {
+	g.state.Phase = PhaseTown
+	g.addOutput(g.renderer.LogInfo("═══════════════════════════"))
+	g.addOutput(g.renderer.LogInfo("  欢迎来到城镇"))
+	g.addOutput(g.renderer.LogInfo("═══════════════════════════"))
+	g.addOutput("")
+	g.addOutput(g.renderer.RenderTownMenu(g.state.Meta))
+}
+
+func (g *Game) processTownInput(cmd string, args []string) {
+	switch cmd {
+	case "1", "upgrade":
+		g.showUpgradeShop()
+	case "2", "class":
+		g.showClassShop()
+	case "3", "stats":
+		g.addOutput(g.renderer.LogInfo(game.FormatMetaStats(g.state.Meta)))
+	case "4", "start", "go":
+		// 开始新冒险
+		meta := g.state.Meta
+		g.state = &GameState{Phase: PhaseCharacter, Meta: meta}
+		g.addOutput(g.renderer.LogInfo("准备开始新的冒险..."))
+		g.addOutput(g.renderer.LogInfo("请输入 'start <名字>' 创建角色"))
+	case "5", "leave":
+		g.state.Phase = PhaseTitle
+		g.addOutput(g.renderer.RenderWelcome())
+	case "buy":
+		g.processBuyUpgrade(args)
+	case "unlock":
+		g.processUnlockClass(args)
+	case "back":
+		g.enterTown()
+	case "quit", "exit":
+		g.addOutput(g.renderer.LogInfo("再见！"))
+	default:
+		g.addOutput(g.renderer.LogError("无效的选择。"))
+	}
+}
+
+func (g *Game) showUpgradeShop() {
+	g.addOutput(g.renderer.RenderUpgradeShop(g.state.Meta))
+	g.addOutput(g.renderer.LogInfo("输入 'buy <编号>' 购买升级，'back' 返回"))
+}
+
+func (g *Game) processBuyUpgrade(args []string) {
+	if len(args) < 1 {
+		g.addOutput(g.renderer.LogError("用法: buy <编号>"))
+		return
+	}
+
+	idx := 0
+	fmt.Sscanf(args[0], "%d", &idx)
+	if idx < 1 || idx > len(game.AvailableUpgrades) {
+		g.addOutput(g.renderer.LogError("无效的编号"))
+		return
+	}
+
+	upgrade := game.AvailableUpgrades[idx-1]
+	if g.state.Meta.PurchaseUpgrade(upgrade) {
+		g.addOutput(g.renderer.LogInfo(fmt.Sprintf("购买了 %s！", upgrade.Name)))
+	} else {
+		g.addOutput(g.renderer.LogError("金币不足或已满级"))
+	}
+	g.addOutput(g.renderer.RenderUpgradeShop(g.state.Meta))
+}
+
+func (g *Game) showClassShop() {
+	g.addOutput(g.renderer.RenderClassShop(g.state.Meta))
+	g.addOutput(g.renderer.LogInfo("输入 'unlock <职业名>' 解锁职业，'back' 返回"))
+}
+
+func (g *Game) processUnlockClass(args []string) {
+	if len(args) < 1 {
+		g.addOutput(g.renderer.LogError("用法: unlock <职业名>"))
+		return
+	}
+
+	classMap := map[string]game.Class{
+		"游侠": game.Ranger, "ranger": game.Ranger,
+		"法师": game.Mage, "mage": game.Mage,
+		"盗贼": game.Rogue, "rogue": game.Rogue,
+	}
+
+	class, ok := classMap[args[0]]
+	if !ok {
+		g.addOutput(g.renderer.LogError("无效的职业名"))
+		return
+	}
+
+	cost := game.GetClassUnlockCost(class)
+	if g.state.Meta.UnlockClass(class, cost) {
+		g.addOutput(g.renderer.LogInfo(fmt.Sprintf("解锁了 %s！", game.GetClassName(class))))
+	} else {
+		g.addOutput(g.renderer.LogError("金币不足或已解锁"))
+	}
+	g.addOutput(g.renderer.RenderClassShop(g.state.Meta))
 }
 
 // RenderCurrentView 渲染当前视图

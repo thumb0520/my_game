@@ -12,12 +12,17 @@ import (
 // GameState 游戏状态
 type GameState struct {
 	Player      *game.Character
-	Dungeon     *game.Dungeon
+	FloorMap    *game.FloorMap
 	Depth       int
 	Phase       GamePhase
 	CombatState *game.CombatState
 	ShopItems   []*game.Item
 	EventData   *EventState
+	Meta        *game.MetaProgress // 局外养成
+
+	// 战斗暂停控制
+	Waiting              string // "" = 正常输入, "continue" = 等待按回车继续
+	PendingMonsterAction string // 待执行的怪物行动描述
 }
 
 // GamePhase 游戏阶段
@@ -25,6 +30,7 @@ type GamePhase string
 
 const (
 	PhaseTitle     GamePhase = "title"
+	PhaseTown      GamePhase = "town" // 城镇（局外养成）
 	PhaseExplore   GamePhase = "explore"
 	PhaseCombat    GamePhase = "combat"
 	PhaseShop      GamePhase = "shop"
@@ -50,21 +56,22 @@ type EventChoiceState struct {
 
 // SaveData 存档数据
 type SaveData struct {
-	PlayerName  string            `json:"player_name"`
-	PlayerClass string            `json:"player_class"`
-	Level       int               `json:"level"`
-	Exp         int               `json:"exp"`
-	HP          int               `json:"hp"`
-	MaxHP       int               `json:"max_hp"`
-	Gold        int               `json:"gold"`
-	Depth       int               `json:"depth"`
-	STR         int               `json:"str"`
-	DEX         int               `json:"dex"`
-	INT         int               `json:"int"`
-	VIT         int               `json:"vit"`
-	LUK         int               `json:"luk"`
-	Inventory   []SaveItem        `json:"inventory"`
+	PlayerName  string              `json:"player_name"`
+	PlayerClass string              `json:"player_class"`
+	Level       int                 `json:"level"`
+	Exp         int                 `json:"exp"`
+	HP          int                 `json:"hp"`
+	MaxHP       int                 `json:"max_hp"`
+	Gold        int                 `json:"gold"`
+	Depth       int                 `json:"depth"`
+	STR         int                 `json:"str"`
+	DEX         int                 `json:"dex"`
+	INT         int                 `json:"int"`
+	VIT         int                 `json:"vit"`
+	LUK         int                 `json:"luk"`
+	Inventory   []SaveItem          `json:"inventory"`
 	Equipment   map[string]SaveItem `json:"equipment"`
+	Meta        *game.MetaProgress  `json:"meta"` // 局外养成
 }
 
 // SaveItem 存档物品
@@ -99,6 +106,7 @@ func SaveGame(state *GameState, path string) error {
 		LUK:         state.Player.LUK,
 		Inventory:   make([]SaveItem, 0),
 		Equipment:   make(map[string]SaveItem),
+		Meta:        state.Meta,
 	}
 
 	for _, item := range state.Player.Inventory {
@@ -196,8 +204,15 @@ func LoadGame(path string) (*GameState, error) {
 		Phase:  PhaseExplore,
 	}
 
-	// 生成新地牢
-	state.Dungeon = game.GenerateDungeon(state.Depth)
+	// 加载养成数据
+	if saveData.Meta != nil {
+		state.Meta = saveData.Meta
+	} else {
+		state.Meta = game.NewMetaProgress()
+	}
+
+	// 生成新地图
+	state.FloorMap = game.GenerateFloorMap(state.Depth)
 
 	return state, nil
 }

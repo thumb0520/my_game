@@ -13,13 +13,13 @@ type Monster struct {
 	Dialogue string
 	Strategy string
 
-	MaxHP  int
-	HP     int
-	ATK    int
-	DEF    int
-	SPD    int
-	CRIT   int
-	Dodge  int
+	MaxHP int
+	HP    int
+	ATK   int
+	DEF   int
+	SPD   int
+	CRIT  int
+	Dodge int
 
 	ExpReward  int
 	GoldReward int
@@ -41,16 +41,17 @@ func NewMonster(resp interface{}, depth int, isBoss bool) *Monster {
 
 // NewMonsterFromData 直接从数据创建怪物
 func NewMonsterFromData(name, desc string, traits []string, dialogue, strategy string, depth int, isBoss bool) *Monster {
-	baseHP := 30 + depth*15
-	baseATK := 8 + depth*3
-	baseDEF := 3 + depth*2
+	baseHP := 60 + depth*25
+	baseATK := 15 + depth*5
+	baseDEF := 8 + depth*3
 	baseSPD := 8 + depth
-	baseCRIT := 5 + depth
+	baseCRIT := 5 + depth*2
 
 	if isBoss {
 		baseHP *= 3
-		baseATK = int(float64(baseATK) * 1.5)
+		baseATK = int(float64(baseATK) * 1.8)
 		baseDEF = int(float64(baseDEF) * 1.5)
+		baseCRIT += 10
 	}
 
 	m := &Monster{

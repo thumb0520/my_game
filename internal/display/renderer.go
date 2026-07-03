@@ -214,6 +214,24 @@ func (r *Renderer) RenderSkills(skills []*game.Skill) string {
 	return sb.String()
 }
 
+// getSlotIcon 获取装备槽位图标
+func getSlotIcon(slot game.Slot) string {
+	switch slot {
+	case game.SlotWeapon:
+		return "⚔"
+	case game.SlotHelmet:
+		return "🪖"
+	case game.SlotArmor:
+		return "🛡"
+	case game.SlotBoots:
+		return "👢"
+	case game.SlotAcc1, game.SlotAcc2:
+		return "💍"
+	default:
+		return "?"
+	}
+}
+
 // RenderInventory 渲染物品栏
 func (r *Renderer) RenderInventory(items []*game.Item) string {
 	var sb strings.Builder
@@ -228,50 +246,158 @@ func (r *Renderer) RenderInventory(items []*game.Item) string {
 		if !ok {
 			rarityStyle = lipgloss.NewStyle().Foreground(ColorWhite)
 		}
-		sb.WriteString(fmt.Sprintf("  %s %s %s",
+
+		// 显示装备槽位
+		slotInfo := ""
+		if item.Type != game.Consumable && item.Slot != "" {
+			slotInfo = fmt.Sprintf(" %s%s", getSlotIcon(item.Slot), string(item.Slot))
+		} else if item.Type == game.Consumable {
+			slotInfo = " 🧪消耗品"
+		}
+
+		sb.WriteString(fmt.Sprintf("  %s %s%s %s",
 			PromptStyle.Render(fmt.Sprintf("[%d]", i+1)),
 			rarityStyle.Render(item.Name),
+			StatLabel.Render(slotInfo),
 			StatLabel.Render(item.Description)))
 		sb.WriteString("\n")
 	}
 	return sb.String()
 }
 
-// RenderRoom 渲染房间
-func (r *Renderer) RenderRoom(room *game.Room, dungeon *game.Dungeon) string {
+// RenderShopItem 渲染商店物品详情（带属性对比）
+func (r *Renderer) RenderShopItem(item *game.Item, price int, player *game.Character) string {
 	var sb strings.Builder
 
-	// 房间类型图标
-	icon := r.roomIcon(room.Type)
-	sb.WriteString(r.LogInfo(fmt.Sprintf("%s 进入房间 #%d (%s)", icon, room.Index, string(room.Type))))
+	// 品质颜色
+	rarityStyle, ok := RarityStyle[string(item.Rarity)]
+	if !ok {
+		rarityStyle = lipgloss.NewStyle().Foreground(ColorWhite)
+	}
+
+	// 物品名称和品质
+	sb.WriteString(fmt.Sprintf("  %s %s %s",
+		rarityStyle.Render(item.Name),
+		StatLabel.Render(string(item.Rarity)),
+		GoldStyle.Render(fmt.Sprintf("%dg", price))))
 	sb.WriteString("\n")
 
-	if room.Description != "" {
-		sb.WriteString(r.LogInfo("  " + room.Description))
+	if item.Description != "" {
+		sb.WriteString(fmt.Sprintf("    %s", StatLabel.Render(item.Description)))
 		sb.WriteString("\n")
 	}
 
-	// 显示可前往的房间
-	connected := dungeon.GetConnectedRooms()
-	if len(connected) > 0 {
+	// 属性详情
+	if item.Type != game.Consumable {
+		sb.WriteString(fmt.Sprintf("    %s", StatLabel.Render("属性:")))
 		sb.WriteString("\n")
-		sb.WriteString(StatLabel.Render("可前往:"))
-		sb.WriteString("\n")
-		for _, next := range connected {
-			visited := ""
-			if next.Visited {
-				visited = StatLabel.Render(" (已探索)")
+
+		for stat, val := range item.Effects {
+			statName := r.getStatName(stat)
+			currentVal := r.getPlayerStat(player, stat)
+
+			// 计算差值
+			diff := val - currentVal
+			diffStr := ""
+			diffColor := ColorWhite
+			if diff > 0 {
+				diffStr = fmt.Sprintf("+%d", diff)
+				diffColor = ColorPrimary
+			} else if diff < 0 {
+				diffStr = fmt.Sprintf("%d", diff)
+				diffColor = ColorDanger
+			} else {
+				diffStr = "±0"
 			}
-			sb.WriteString(fmt.Sprintf("  %s 房间#%d [%s]%s",
-				PromptStyle.Render(fmt.Sprintf("[%d]", next.Index)),
-				next.Index,
-				string(next.Type),
-				visited))
+
+			sb.WriteString(fmt.Sprintf("      %s: %s %s",
+				statName,
+				lipgloss.NewStyle().Foreground(ColorWhite).Render(fmt.Sprintf("%d", val)),
+				lipgloss.NewStyle().Foreground(diffColor).Render(fmt.Sprintf("(%s)", diffStr))))
 			sb.WriteString("\n")
 		}
 	}
 
 	return sb.String()
+}
+
+// RenderLootItem 渲染掉落物品详情
+func (r *Renderer) RenderLootItem(item *game.Item) string {
+	var sb strings.Builder
+
+	rarityStyle, ok := RarityStyle[string(item.Rarity)]
+	if !ok {
+		rarityStyle = lipgloss.NewStyle().Foreground(ColorWhite)
+	}
+
+	sb.WriteString(fmt.Sprintf("  %s %s",
+		ItemStyle.Render("🎁"),
+		rarityStyle.Render(item.Name)))
+	sb.WriteString("\n")
+
+	if item.Description != "" {
+		sb.WriteString(fmt.Sprintf("    %s", StatLabel.Render(item.Description)))
+		sb.WriteString("\n")
+	}
+
+	// 属性详情
+	if item.Type != game.Consumable {
+		for stat, val := range item.Effects {
+			statName := r.getStatName(stat)
+			sb.WriteString(fmt.Sprintf("    %s +%d", statName, val))
+			sb.WriteString("\n")
+		}
+	}
+
+	return sb.String()
+}
+
+// getStatName 获取属性中文名
+func (r *Renderer) getStatName(stat string) string {
+	switch stat {
+	case "atk":
+		return "攻击力"
+	case "def":
+		return "防御力"
+	case "hp":
+		return "生命值"
+	case "crit":
+		return "暴击率"
+	case "dodge":
+		return "闪避率"
+	case "spd":
+		return "速度"
+	case "heal":
+		return "恢复"
+	case "cure_poison":
+		return "解毒"
+	case "temp_atk":
+		return "临时攻击"
+	case "temp_def":
+		return "临时防御"
+	default:
+		return stat
+	}
+}
+
+// getPlayerStat 获取玩家当前属性值
+func (r *Renderer) getPlayerStat(player *game.Character, stat string) int {
+	switch stat {
+	case "atk":
+		return player.ATK
+	case "def":
+		return player.DEF
+	case "hp":
+		return player.MaxHP
+	case "crit":
+		return player.CRIT
+	case "dodge":
+		return player.Dodge
+	case "spd":
+		return player.SPD
+	default:
+		return 0
+	}
 }
 
 func (r *Renderer) roomIcon(t game.RoomType) string {
@@ -280,6 +406,8 @@ func (r *Renderer) roomIcon(t game.RoomType) string {
 		return "🚪"
 	case game.RoomCombat:
 		return "⚔️"
+	case game.RoomElite:
+		return "🔥"
 	case game.RoomTreasure:
 		return "💎"
 	case game.RoomShop:
@@ -295,29 +423,187 @@ func (r *Renderer) roomIcon(t game.RoomType) string {
 	}
 }
 
-// RenderDungeonMap 渲染简易地牢地图
-func (r *Renderer) RenderDungeonMap(dungeon *game.Dungeon) string {
+// RenderFloorMap 渲染杀戮尖塔风格的网状地图
+func (r *Renderer) RenderFloorMap(fm *game.FloorMap) string {
 	var sb strings.Builder
-	sb.WriteString(r.LogInfo(fmt.Sprintf("=== 地牢地图 (第 %d 层) ===", dungeon.Depth)))
+
+	sb.WriteString(r.LogInfo(fmt.Sprintf("══════════ 第 %d 层 ══════════", fm.Depth)))
 	sb.WriteString("\n\n")
 
-	for i, room := range dungeon.Rooms {
-		marker := " "
-		if i == dungeon.Current {
-			marker = "►"
+	// 获取当前节点和可达节点
+	currentNode := fm.GetCurrentNode()
+	reachable := fm.GetReachableNodes()
+	reachableMap := make(map[string]bool)
+	for _, n := range reachable {
+		reachableMap[game.NodeKey(n.Row, n.Col)] = true
+	}
+
+	// 计算进度
+	clearedCount := 0
+	totalNodes := 0
+	for _, row := range fm.Nodes {
+		for range row {
+			totalNodes++
 		}
-		if !room.Visited {
-			sb.WriteString(fmt.Sprintf("  %s [???]\n", marker))
-		} else {
-			icon := r.roomIcon(room.Type)
-			cleared := ""
-			if room.Cleared {
-				cleared = " ✓"
+	}
+	for _, row := range fm.Nodes {
+		for _, node := range row {
+			if node.Cleared {
+				clearedCount++
 			}
-			sb.WriteString(fmt.Sprintf("  %s %s %s%s\n", marker, icon, string(room.Type), cleared))
+		}
+	}
+	sb.WriteString(StatLabel.Render(fmt.Sprintf("  进度: %d/%d 节点已探索", clearedCount, totalNodes)))
+	sb.WriteString("\n\n")
+
+	// 显示完整地图（从入口到 Boss，每行一个节点组）
+	for row := 0; row < fm.RowCount; row++ {
+		nodes := fm.Nodes[row]
+		if len(nodes) == 0 {
+			continue
+		}
+
+		// 行标签
+		isCurrentRow := currentNode != nil && row == currentNode.Row
+		if isCurrentRow {
+			sb.WriteString(PromptStyle.Render("  ► "))
+		} else {
+			sb.WriteString(StatLabel.Render(fmt.Sprintf("  %2d ", row)))
+		}
+
+		// 绘制这一行的所有节点
+		for i, node := range nodes {
+			key := game.NodeKey(row, node.Col)
+			icon := game.GetNodeIcon(&node.Type)
+			isCurrent := isCurrentRow && node.Col == currentNode.Col
+			isReach := reachableMap[key]
+			isCleared := node.Cleared
+
+			if i > 0 {
+				sb.WriteString("  ")
+			}
+
+			// 节点显示
+			if isCurrent {
+				// 当前位置：高亮框
+				sb.WriteString(PromptStyle.Render(fmt.Sprintf("[%s]", icon)))
+			} else if isReach {
+				// 可前往：高亮 + 下箭头标记
+				sb.WriteString(lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true).Render(fmt.Sprintf("▼%s", icon)))
+			} else if isCleared {
+				// 已清理：灰色+勾
+				sb.WriteString(StatLabel.Render(fmt.Sprintf(" %s✓", icon)))
+			} else {
+				// 未探索
+				sb.WriteString(fmt.Sprintf(" %s ", icon))
+			}
+		}
+		sb.WriteString("\n")
+
+		// 连接线（显示分支结构）
+		if row < fm.RowCount-1 && len(fm.Nodes[row+1]) > 0 {
+			// 收集当前行哪些节点有连接
+			hasConn := make(map[int]bool) // col -> has connection
+			for _, conn := range fm.Connections {
+				if conn.FromRow == row {
+					hasConn[conn.FromCol] = true
+				}
+			}
+
+			// 绘制连接线
+			connLine := "      "
+			for i, node := range nodes {
+				if i > 0 {
+					connLine += "  "
+				}
+				if hasConn[node.Col] {
+					connLine += " │ "
+				} else {
+					connLine += "   "
+				}
+			}
+			sb.WriteString(StatLabel.Render(connLine))
+			sb.WriteString("\n")
 		}
 	}
 
+	sb.WriteString("\n")
+
+	// 显示当前可前往的节点列表
+	if len(reachable) > 0 {
+		sb.WriteString(PromptStyle.Render("  可前往:"))
+		sb.WriteString("\n")
+		for i, node := range reachable {
+			icon := game.GetNodeIcon(&node.Type)
+			label := game.GetNodeLabel(node.Type)
+
+			var nodeColor lipgloss.Style
+			switch node.Type {
+			case game.RoomElite:
+				nodeColor = lipgloss.NewStyle().Foreground(ColorDanger).Bold(true)
+			case game.RoomBoss:
+				nodeColor = BossStyle
+			case game.RoomRest:
+				nodeColor = lipgloss.NewStyle().Foreground(ColorPrimary)
+			case game.RoomShop:
+				nodeColor = GoldStyle
+			case game.RoomTreasure:
+				nodeColor = AccentStyle
+			default:
+				nodeColor = lipgloss.NewStyle().Foreground(ColorWhite)
+			}
+
+			sb.WriteString(fmt.Sprintf("    %s %s %s",
+				PromptStyle.Render(fmt.Sprintf("[%d]", i+1)),
+				icon,
+				nodeColor.Render(label)))
+			sb.WriteString("\n")
+		}
+	}
+
+	sb.WriteString("\n")
+
+	// 图例
+	sb.WriteString(StatLabel.Render("  图例: "))
+	sb.WriteString(fmt.Sprintf("%s 战斗  ", "⚔"))
+	sb.WriteString(fmt.Sprintf("%s 精英  ", "🔥"))
+	sb.WriteString(fmt.Sprintf("%s 宝箱  ", "💎"))
+	sb.WriteString(fmt.Sprintf("%s 商店  ", "🏪"))
+	sb.WriteString(fmt.Sprintf("%s 休息  ", "🏕"))
+	sb.WriteString(fmt.Sprintf("%s 事件  ", "❓"))
+	sb.WriteString(fmt.Sprintf("%s Boss", "💀"))
+	sb.WriteString("\n")
+
+	return sb.String()
+}
+
+// isNodeReachable 检查节点是否可达
+func (r *Renderer) isNodeReachable(fm *game.FloorMap, row, col int) bool {
+	reachable := fm.GetReachableNodes()
+	for _, n := range reachable {
+		if n.Row == row && n.Col == col {
+			return true
+		}
+	}
+	return false
+}
+
+// RenderNodeSelection 渲染节点选择界面
+func (r *Renderer) RenderNodeSelection(nodes []*game.MapNode) string {
+	var sb strings.Builder
+	sb.WriteString(PromptStyle.Render("选择目的地:"))
+	sb.WriteString("\n")
+	for i, node := range nodes {
+		icon := game.GetNodeIcon(&node.Type)
+		label := game.GetNodeLabel(node.Type)
+		sb.WriteString(fmt.Sprintf("  %s %s %s (行%d 列%d)",
+			PromptStyle.Render(fmt.Sprintf("[%d]", i+1)),
+			icon,
+			label,
+			node.Row,
+			node.Col))
+		sb.WriteString("\n")
+	}
 	return sb.String()
 }
 
@@ -341,19 +627,38 @@ func (r *Renderer) RenderCharacterSheet(p *game.Character) string {
 		StatLabel.Render("闪避:"), p.Dodge))
 	sb.WriteString(fmt.Sprintf("  %s %d\n", GoldStyle.Render("金币:"), p.Gold))
 
-	// 装备
+	// 装备（显示所有槽位）
 	sb.WriteString("\n")
 	sb.WriteString(StatLabel.Render("装备:"))
 	sb.WriteString("\n")
-	for slot, item := range p.Equipment {
-		if item != nil {
+
+	// 按固定顺序显示槽位
+	slots := []game.Slot{game.SlotWeapon, game.SlotHelmet, game.SlotArmor, game.SlotBoots, game.SlotAcc1, game.SlotAcc2}
+	for _, slot := range slots {
+		icon := getSlotIcon(slot)
+		item, exists := p.Equipment[slot]
+		if exists && item != nil {
 			rarityStyle, ok := RarityStyle[string(item.Rarity)]
 			if !ok {
 				rarityStyle = lipgloss.NewStyle().Foreground(ColorWhite)
 			}
-			sb.WriteString(fmt.Sprintf("  %s: %s\n", string(slot), rarityStyle.Render(item.Name)))
+			// 显示装备属性
+			effects := ""
+			for stat, val := range item.Effects {
+				if effects != "" {
+					effects += " "
+				}
+				effects += fmt.Sprintf("%s+%d", r.getStatName(stat), val)
+			}
+			sb.WriteString(fmt.Sprintf("  %s %s %s %s\n",
+				StatLabel.Render(fmt.Sprintf("%s%s:", icon, string(slot))),
+				rarityStyle.Render(item.Name),
+				StatLabel.Render(string(item.Rarity)),
+				StatLabel.Render(effects)))
 		} else {
-			sb.WriteString(fmt.Sprintf("  %s: -\n", string(slot)))
+			sb.WriteString(fmt.Sprintf("  %s %s\n",
+				StatLabel.Render(fmt.Sprintf("%s%s:", icon, string(slot))),
+				StatLabel.Render("(空)")))
 		}
 	}
 
@@ -375,11 +680,14 @@ func (r *Renderer) RenderEvent(event *game.Event) string {
 		sb.WriteString("\n")
 	}
 
+	sb.WriteString("\n")
+	sb.WriteString(StatLabel.Render("  输入编号做出选择"))
+
 	return sb.String()
 }
 
 // RenderShop 渲染商店
-func (r *Renderer) RenderShop(items []*game.Item, playerGold int) string {
+func (r *Renderer) RenderShop(items []*game.Item, playerGold int, player *game.Character) string {
 	var sb strings.Builder
 	sb.WriteString(r.LogInfo("=== 商店 ==="))
 	sb.WriteString("\n")
@@ -387,20 +695,13 @@ func (r *Renderer) RenderShop(items []*game.Item, playerGold int) string {
 	sb.WriteString("\n\n")
 
 	for i, item := range items {
-		rarityStyle, ok := RarityStyle[string(item.Rarity)]
-		if !ok {
-			rarityStyle = lipgloss.NewStyle().Foreground(ColorWhite)
-		}
 		price := 10 + len(item.Effects)*5
-		sb.WriteString(fmt.Sprintf("  %s %s %s %s",
-			PromptStyle.Render(fmt.Sprintf("[%d]", i+1)),
-			rarityStyle.Render(item.Name),
-			StatLabel.Render(item.Description),
-			GoldStyle.Render(fmt.Sprintf("%dg", price))))
+		sb.WriteString(fmt.Sprintf("  %s", PromptStyle.Render(fmt.Sprintf("[%d]", i+1))))
+		sb.WriteString(r.RenderShopItem(item, price, player))
 		sb.WriteString("\n")
 	}
 
-	sb.WriteString(fmt.Sprintf("\n  %s 返回", PromptStyle.Render("[0]")))
+	sb.WriteString(fmt.Sprintf("  %s 返回", PromptStyle.Render("[0]")))
 	sb.WriteString("\n")
 
 	return sb.String()
@@ -534,13 +835,117 @@ func (r *Renderer) RenderLoot(items []*game.Item, gold int, exp int) string {
 		sb.WriteString(fmt.Sprintf("  %s\n", AccentStyle.Render(fmt.Sprintf("✦ %d 经验", exp))))
 	}
 	for _, item := range items {
-		rarityStyle, ok := RarityStyle[string(item.Rarity)]
-		if !ok {
-			rarityStyle = lipgloss.NewStyle().Foreground(ColorWhite)
-		}
-		sb.WriteString(fmt.Sprintf("  %s %s\n",
-			ItemStyle.Render("🎁"),
-			rarityStyle.Render(item.Name)))
+		sb.WriteString(r.RenderLootItem(item))
 	}
+	return sb.String()
+}
+
+// RenderTownMenu 渲染城镇菜单
+func (r *Renderer) RenderTownMenu(meta *game.MetaProgress) string {
+	var sb strings.Builder
+
+	sb.WriteString(GoldStyle.Render(fmt.Sprintf("  💰 可用金币: %d", meta.TotalGold)))
+	sb.WriteString("\n\n")
+
+	sb.WriteString(fmt.Sprintf("  %s 升级商店\n", PromptStyle.Render("[1]")))
+	sb.WriteString(fmt.Sprintf("  %s 解锁职业\n", PromptStyle.Render("[2]")))
+	sb.WriteString(fmt.Sprintf("  %s 查看统计\n", PromptStyle.Render("[3]")))
+	sb.WriteString(fmt.Sprintf("  %s 开始冒险\n", PromptStyle.Render("[4]")))
+	sb.WriteString(fmt.Sprintf("  %s 返回标题\n", PromptStyle.Render("[5]")))
+
+	return sb.String()
+}
+
+// RenderUpgradeShop 渲染升级商店
+func (r *Renderer) RenderUpgradeShop(meta *game.MetaProgress) string {
+	var sb strings.Builder
+
+	sb.WriteString(r.LogInfo("=== 升级商店 ==="))
+	sb.WriteString("\n")
+	sb.WriteString(GoldStyle.Render(fmt.Sprintf("  💰 可用金币: %d", meta.TotalGold)))
+	sb.WriteString("\n\n")
+
+	for i, upgrade := range game.AvailableUpgrades {
+		level := meta.GetUpgradeLevel(upgrade.ID)
+		cost := meta.GetUpgradeCost(upgrade)
+
+		// 等级显示
+		levelStr := fmt.Sprintf("Lv.%d/%d", level, upgrade.MaxLevel)
+		if level >= upgrade.MaxLevel {
+			levelStr = SuccessStyle.Render("MAX")
+		} else {
+			levelStr = StatLabel.Render(levelStr)
+		}
+
+		// 费用显示
+		costStr := ""
+		if cost < 0 {
+			costStr = StatLabel.Render("已满级")
+		} else if meta.TotalGold >= cost {
+			costStr = GoldStyle.Render(fmt.Sprintf("%dg", cost))
+		} else {
+			costStr = ErrorStyle.Render(fmt.Sprintf("%dg", cost))
+		}
+
+		sb.WriteString(fmt.Sprintf("  %s %s %s %s\n      %s\n",
+			PromptStyle.Render(fmt.Sprintf("[%d]", i+1)),
+			TitleStyle.Render(upgrade.Name),
+			levelStr,
+			costStr,
+			StatLabel.Render(upgrade.Description)))
+		sb.WriteString(fmt.Sprintf("      %s\n", StatLabel.Render(upgrade.Effect)))
+	}
+
+	sb.WriteString(fmt.Sprintf("\n  %s 返回", PromptStyle.Render("[0]")))
+	sb.WriteString("\n")
+
+	return sb.String()
+}
+
+// RenderClassShop 渲染职业商店
+func (r *Renderer) RenderClassShop(meta *game.MetaProgress) string {
+	var sb strings.Builder
+
+	sb.WriteString(r.LogInfo("=== 职业解锁 ==="))
+	sb.WriteString("\n")
+	sb.WriteString(GoldStyle.Render(fmt.Sprintf("  💰 可用金币: %d", meta.TotalGold)))
+	sb.WriteString("\n\n")
+
+	classes := []struct {
+		Class game.Class
+		Name  string
+		Desc  string
+	}{
+		{game.Warrior, "战士", "近战之王，高防高血，擅长持久战"},
+		{game.Ranger, "游侠", "远程射手，高暴击高闪避"},
+		{game.Mage, "法师", "元素法师，AOE伤害+控制"},
+		{game.Rogue, "盗贼", "暗影刺客，高暴击+连击"},
+	}
+
+	for _, c := range classes {
+		unlocked := meta.IsClassUnlocked(c.Class)
+		cost := game.GetClassUnlockCost(c.Class)
+
+		status := ""
+		if unlocked {
+			status = SuccessStyle.Render("✓ 已解锁")
+		} else {
+			if meta.TotalGold >= cost {
+				status = GoldStyle.Render(fmt.Sprintf("%dg", cost))
+			} else {
+				status = ErrorStyle.Render(fmt.Sprintf("%dg", cost))
+			}
+		}
+
+		sb.WriteString(fmt.Sprintf("  %s %s - %s %s\n",
+			PromptStyle.Render(c.Name),
+			TitleStyle.Render(c.Desc),
+			status,
+			StatLabel.Render(c.Desc)))
+	}
+
+	sb.WriteString(fmt.Sprintf("\n  %s 返回", PromptStyle.Render("[0]")))
+	sb.WriteString("\n")
+
 	return sb.String()
 }
