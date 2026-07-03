@@ -1,0 +1,30 @@
+# DungeonLog 配置文件
+
+llm:
+  # API 基础地址（支持 OpenAI 格式的任意服务商）
+  # 例如：
+  #   OpenAI:    https://api.openai.com/v1
+  #   Claude:    https://api.anthropic.com/v1
+  #   DeepSeek:  https://api.deepseek.com/v1
+  #   本地模型:   http://localhost:11434/v1
+  #   自定义:    https://your-proxy.com/v1
+  base_url: "https://api.openai.com/v1"
+
+  # API Key（必填，也可通过环境变量 DUNGEONLOG_API_KEY 设置）
+  api_key: "sk-your-api-key-here"
+
+  # 模型名称
+  model: "gpt-4o-mini"
+
+  # 温度 (0.0 - 2.0)
+  temperature: 0.8
+
+  # 最大 token 数
+  max_tokens: 512
+
+  # 是否启用 LLM（false 则使用内置 Mock）
+  enabled: true
+
+game:
+  # 难度：easy / normal / hard
+  difficulty: "normal"
