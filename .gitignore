@@ -1,0 +1,30 @@
+# Binaries
+dungeonlog
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go
+*.test
+*.out
+go.work
+go.work.sum
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Game saves (user data)
+data/saves/*.json
+
+# Config with API keys (sensitive)
+data/config.yaml
